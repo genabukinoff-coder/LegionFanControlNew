@@ -136,6 +136,21 @@ const std::vector<FanCurvePoint> defaultCurve = {
 // Custom fan curve (loaded from fancurve.ini)
 std::vector<FanCurvePoint> customCurve;
 
+// Constant 1700 RPM fan curve (17 = 1700 RPM in EC units)
+const std::vector<FanCurvePoint> constant1700Curve = {
+    {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},               // Level 0
+    {17, 17, 5, 5, 67, 63, 53, 50, 45, 35},            // Level 1
+    {17, 17, 5, 5, 67, 63, 53, 50, 50, 40},            // Level 2
+    {17, 17, 5, 5, 67, 63, 53, 50, 127, 45},           // Level 3
+    {17, 17, 2, 2, 72, 63, 56, 50, 127, 127},          // Level 4
+    {17, 17, 2, 2, 77, 67, 59, 53, 127, 127},          // Level 5
+    {17, 17, 2, 2, 80, 72, 65, 56, 127, 127},          // Level 6
+    {17, 17, 2, 2, 84, 77, 68, 62, 127, 127},          // Level 7
+    {17, 17, 2, 2, 88, 80, 75, 65, 127, 127},          // Level 8
+    {17, 17, 2, 2, 91, 84, 85, 69, 127, 127},          // Level 9
+    {17, 17, 2, 2, 127, 88, 127, 81, 127, 127}         // Level 10
+};
+
 const char* INI_FILENAME = "fancurve.ini";
 
 // Loads custom fan curve from INI file
@@ -389,10 +404,11 @@ int main() {
         printf("WARNING: This is a low-level tool. Use responsibly.\n\n");
         printf("Select an option:\n");
         printf("  [1] Apply CUSTOM Fan Curve (from fancurve.ini)\n");
-        printf("  [2] Restore DEFAULT Fan Curve\n");
-        printf("  [3] READ and Display Current Fan Curve from EC\n");
-        printf("  [4] DUMP Full EC Memory to ec_dump.txt\n");
-        printf("  [5] Exit\n\n");
+        printf("  [2] Apply CONSTANT 1700 RPM Fan Curve\n");
+        printf("  [3] Restore DEFAULT Fan Curve\n");
+        printf("  [4] READ and Display Current Fan Curve from EC\n");
+        printf("  [5] DUMP Full EC Memory to ec_dump.txt\n");
+        printf("  [6] Exit\n\n");
         printf("Your choice: ");
 
         char choice = _getch();
@@ -412,17 +428,22 @@ int main() {
             }
             break;
         case '2':
+            printf("Applying CONSTANT 1700 RPM fan curve...\n");
+            WriteFanCurve(constant1700Curve);
+            printf("\nCONSTANT 1700 RPM curve applied successfully!\n");
+            break;
+        case '3':
             printf("Applying DEFAULT fan curve...\n");
             WriteFanCurve(defaultCurve);
             printf("\nDEFAULT curve restored successfully!\n");
             break;
-        case '3':
+        case '4':
             ReadAndDisplayCurrentCurve();
             break;
-        case '4':
+        case '5':
             DumpECMemory();
             break;
-        case '5':
+        case '6':
             printf("Exiting...\n");
             ShutdownWinIo();
             return 0;
