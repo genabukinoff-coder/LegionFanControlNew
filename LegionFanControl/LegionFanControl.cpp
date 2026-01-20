@@ -19,30 +19,33 @@
  */
 
 #include <Windows.h>
-#include <shellapi.h>  // For system tray
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <vector>
 #include <string>
-#include <conio.h> // For _getch()
+#include <richedit.h>
 
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "comctl32.lib")
 
-// System tray constants
+#include "winio.h"
+#pragma comment(lib, "WinIox64.lib")
+
+// Window/control IDs
+#define ID_EDIT_OUTPUT 101
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_ICON 1
 #define ID_TRAY_SHOW 1001
 #define ID_TRAY_EXIT 1002
 
-// Global variables for system tray
+// Global variables
+HWND g_hMainWnd = NULL;
+HWND g_hEditOutput = NULL;
 NOTIFYICONDATA g_nid = {0};
-HWND g_hTrayWnd = NULL;
-HWND g_hConsoleWnd = NULL;
 bool g_bMinimizedToTray = false;
 bool g_bRunning = true;
-
-#include "winio.h"
-#pragma comment(lib, "WinIox64.lib")
+HFONT g_hFont = NULL;
 
 //==========================The hardware port to read/write function================================
 #define READ_PORT(port, data2) GetPortVal(port, &data2, 1);
@@ -50,7 +53,6 @@ bool g_bRunning = true;
 //==================================================================================================
 
 //================================ KBC/PM Channel Functions =================================
-// Using PM Channel (62/66) for standard EC RAM access
 #define PM_STATUS_PORT66 0x66
 #define PM_CMD_PORT66 0x66
 #define PM_DATA_PORT62 0x62
@@ -70,7 +72,7 @@ void Wait_PM_OBF(void) {
 BYTE EC_ReadByte_PM(BYTE index) {
     DWORD data;
     Wait_PM_IBE();
-    WRITE_PORT(PM_CMD_PORT66, 0x80); // Read command
+    WRITE_PORT(PM_CMD_PORT66, 0x80);
     Wait_PM_IBE();
     WRITE_PORT(PM_DATA_PORT62, index);
     Wait_PM_OBF();
@@ -79,21 +81,20 @@ BYTE EC_ReadByte_PM(BYTE index) {
 }
 //=======================================================================================
 
- // --- Low-Level I/O Port Functions ---
+// --- Low-Level I/O Port Functions ---
 UINT8 EC_ADDR_PORT = 0x4E;
 UINT8 EC_DATA_PORT = 0x4F;
 
-// Protocol to read from extended EC RAM (addresses > 0xFF)
 uint8_t ECRamReadExt(unsigned short address) {
     DWORD data;
     WRITE_PORT(EC_ADDR_PORT, 0x2E);
     WRITE_PORT(EC_DATA_PORT, 0x11);
     WRITE_PORT(EC_ADDR_PORT, 0x2F);
-    WRITE_PORT(EC_DATA_PORT, address >> 8); // High byte
+    WRITE_PORT(EC_DATA_PORT, address >> 8);
     WRITE_PORT(EC_ADDR_PORT, 0x2E);
     WRITE_PORT(EC_DATA_PORT, 0x10);
     WRITE_PORT(EC_ADDR_PORT, 0x2F);
-    WRITE_PORT(EC_DATA_PORT, address & 0xFF); // Low byte
+    WRITE_PORT(EC_DATA_PORT, address & 0xFF);
     WRITE_PORT(EC_ADDR_PORT, 0x2E);
     WRITE_PORT(EC_DATA_PORT, 0x12);
     WRITE_PORT(EC_ADDR_PORT, 0x2F);
@@ -101,17 +102,16 @@ uint8_t ECRamReadExt(unsigned short address) {
     return (uint8_t)data;
 }
 
-// Protocol to write to extended EC RAM (addresses > 0xFF)
 void ECRamWriteExt(unsigned short address, uint8_t value) {
     DWORD data = value;
     WRITE_PORT(EC_ADDR_PORT, 0x2E);
     WRITE_PORT(EC_DATA_PORT, 0x11);
     WRITE_PORT(EC_ADDR_PORT, 0x2F);
-    WRITE_PORT(EC_DATA_PORT, address >> 8); // High byte
+    WRITE_PORT(EC_DATA_PORT, address >> 8);
     WRITE_PORT(EC_ADDR_PORT, 0x2E);
     WRITE_PORT(EC_DATA_PORT, 0x10);
     WRITE_PORT(EC_ADDR_PORT, 0x2F);
-    WRITE_PORT(EC_DATA_PORT, address & 0xFF); // Low byte
+    WRITE_PORT(EC_DATA_PORT, address & 0xFF);
     WRITE_PORT(EC_ADDR_PORT, 0x2E);
     WRITE_PORT(EC_DATA_PORT, 0x12);
     WRITE_PORT(EC_ADDR_PORT, 0x2F);
@@ -119,62 +119,83 @@ void ECRamWriteExt(unsigned short address, uint8_t value) {
 }
 
 // --- Fan Curve Structure and Definitions ---
-
-// Structure to hold one point of the fan curve
 struct FanCurvePoint {
     uint8_t Fan1_RPM; uint8_t Fan2_RPM;
     uint8_t Accel;    uint8_t Decel;
     uint8_t CPU_Max;  uint8_t CPU_Min;
     uint8_t GPU_Max;  uint8_t GPU_Min;
     uint8_t HST_Max;  uint8_t HST_Min;
-    // The EC table has 6 empty bytes at the end of each 16-byte entry
     uint8_t padding[6];
 };
 
-// Base address for the fan curve table in your EC dump
 const unsigned short FAN_CURVE_BASE_ADDR = 0xDF00;
 
-// Hardcoded DEFAULT fan curve (discovered from EC dump)
 const std::vector<FanCurvePoint> defaultCurve = {
-    {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},               // Level 0 (from 0xDF00)
-    {17, 17, 5, 5, 67, 63, 53, 50, 45, 35},          // Level 1 (from 0xDF10)
-    {19, 19, 5, 5, 67, 63, 53, 50, 50, 40},          // Level 2 (from 0xDF20)
-    {21, 21, 5, 5, 67, 63, 53, 50, 127, 45},         // Level 3 (from 0xDF30)
-    {23, 22, 2, 2, 72, 63, 56, 50, 127, 127},        // Level 4 (from 0xDF40)
-    {25, 27, 2, 2, 77, 67, 59, 53, 127, 127},        // Level 5 (from 0xDF50)
-    {29, 29, 2, 2, 80, 72, 65, 56, 127, 127},        // Level 6 (from 0xDF60)
-    {34, 35, 2, 2, 84, 77, 68, 62, 127, 127},        // Level 7 (from 0xDF70)
-    {37, 37, 2, 2, 88, 80, 75, 65, 127, 127},        // Level 8 (from 0xDF80)
-    {44, 46, 2, 2, 91, 84, 85, 69, 127, 127},        // Level 9 (from 0xDF90)
-    {54, 54, 2, 2, 127, 88, 127, 81, 127, 127}       // Level 10 (from 0xDFA0)
+    {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},
+    {17, 17, 5, 5, 67, 63, 53, 50, 45, 35},
+    {19, 19, 5, 5, 67, 63, 53, 50, 50, 40},
+    {21, 21, 5, 5, 67, 63, 53, 50, 127, 45},
+    {23, 22, 2, 2, 72, 63, 56, 50, 127, 127},
+    {25, 27, 2, 2, 77, 67, 59, 53, 127, 127},
+    {29, 29, 2, 2, 80, 72, 65, 56, 127, 127},
+    {34, 35, 2, 2, 84, 77, 68, 62, 127, 127},
+    {37, 37, 2, 2, 88, 80, 75, 65, 127, 127},
+    {44, 46, 2, 2, 91, 84, 85, 69, 127, 127},
+    {54, 54, 2, 2, 127, 88, 127, 81, 127, 127}
 };
 
-// Custom fan curve (loaded from fancurve.ini)
 std::vector<FanCurvePoint> customCurve;
 
-// Constant 1700 RPM fan curve (17 = 1700 RPM in EC units)
 const std::vector<FanCurvePoint> constant1700Curve = {
-    {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},               // Level 0
-    {17, 17, 5, 5, 67, 63, 53, 50, 45, 35},            // Level 1
-    {17, 17, 5, 5, 67, 63, 53, 50, 50, 40},            // Level 2
-    {17, 17, 5, 5, 67, 63, 53, 50, 127, 45},           // Level 3
-    {17, 17, 2, 2, 72, 63, 56, 50, 127, 127},          // Level 4
-    {17, 17, 2, 2, 77, 67, 59, 53, 127, 127},          // Level 5
-    {17, 17, 2, 2, 80, 72, 65, 56, 127, 127},          // Level 6
-    {17, 17, 2, 2, 84, 77, 68, 62, 127, 127},          // Level 7
-    {17, 17, 2, 2, 88, 80, 75, 65, 127, 127},          // Level 8
-    {17, 17, 2, 2, 91, 84, 85, 69, 127, 127},          // Level 9
-    {17, 17, 2, 2, 127, 88, 127, 81, 127, 127}         // Level 10
+    {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},
+    {17, 17, 5, 5, 67, 63, 53, 50, 45, 35},
+    {17, 17, 5, 5, 67, 63, 53, 50, 50, 40},
+    {17, 17, 5, 5, 67, 63, 53, 50, 127, 45},
+    {17, 17, 2, 2, 72, 63, 56, 50, 127, 127},
+    {17, 17, 2, 2, 77, 67, 59, 53, 127, 127},
+    {17, 17, 2, 2, 80, 72, 65, 56, 127, 127},
+    {17, 17, 2, 2, 84, 77, 68, 62, 127, 127},
+    {17, 17, 2, 2, 88, 80, 75, 65, 127, 127},
+    {17, 17, 2, 2, 91, 84, 85, 69, 127, 127},
+    {17, 17, 2, 2, 127, 88, 127, 81, 127, 127}
 };
 
 const char* INI_FILENAME = "fancurve.ini";
 
-// Loads custom fan curve from INI file
-// Format: {Fan1_RPM, Fan2_RPM, Accel, Decel, CPU_Max, CPU_Min, GPU_Max, GPU_Min, HST_Max, HST_Min}, // comment
-// Returns true if successful, false if file not found or error
+// --- Console Output Function ---
+void ConsolePrint(const char* format, ...) {
+    char buffer[4096];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    // Convert \n to \r\n for edit control
+    std::string text;
+    for (char* p = buffer; *p; p++) {
+        if (*p == '\n') {
+            text += "\r\n";
+        } else {
+            text += *p;
+        }
+    }
+
+    // Append to edit control
+    int len = GetWindowTextLengthA(g_hEditOutput);
+    SendMessageA(g_hEditOutput, EM_SETSEL, len, len);
+    SendMessageA(g_hEditOutput, EM_REPLACESEL, FALSE, (LPARAM)text.c_str());
+
+    // Scroll to bottom
+    SendMessageA(g_hEditOutput, EM_SCROLLCARET, 0, 0);
+}
+
+void ConsoleClear() {
+    SetWindowTextA(g_hEditOutput, "");
+}
+
+// --- INI Functions ---
 bool LoadCustomCurveFromINI() {
     customCurve.clear();
-
     FILE* iniFile;
     if (fopen_s(&iniFile, INI_FILENAME, "r") != 0) {
         return false;
@@ -182,27 +203,20 @@ bool LoadCustomCurveFromINI() {
 
     char line[512];
     while (fgets(line, sizeof(line), iniFile)) {
-        // Skip comments and empty lines
         if (line[0] == ';' || line[0] == '#' || line[0] == '\n' || line[0] == '\r') {
             continue;
         }
 
-        // Look for lines starting with '{'
         char* p = line;
-        while (*p == ' ' || *p == '\t') p++;  // Skip leading whitespace
-
+        while (*p == ' ' || *p == '\t') p++;
         if (*p != '{') continue;
-        p++;  // Skip '{'
+        p++;
 
-        // Parse 10 comma-separated values
         int values[10] = {0};
         int count = 0;
 
         while (count < 10 && *p) {
-            // Skip whitespace
             while (*p == ' ' || *p == '\t') p++;
-
-            // Parse number
             int val = 0;
             bool negative = false;
             if (*p == '-') { negative = true; p++; }
@@ -213,16 +227,13 @@ bool LoadCustomCurveFromINI() {
                     p++;
                 }
                 values[count++] = negative ? -val : val;
-
-                // Skip to next value (comma or closing brace)
                 while (*p == ' ' || *p == '\t') p++;
                 if (*p == ',') p++;
             } else {
-                break;  // Invalid character
+                break;
             }
         }
 
-        // If we got all 10 values, add this level
         if (count == 10) {
             FanCurvePoint point;
             point.Fan1_RPM = (uint8_t)values[0];
@@ -243,11 +254,10 @@ bool LoadCustomCurveFromINI() {
     return customCurve.size() > 0;
 }
 
-// Creates a default INI file with the current custom curve values
 void CreateDefaultINI() {
     FILE* iniFile;
     if (fopen_s(&iniFile, INI_FILENAME, "w") != 0) {
-        printf("ERROR: Could not create %s\n", INI_FILENAME);
+        ConsolePrint("ERROR: Could not create %s\n", INI_FILENAME);
         return;
     }
 
@@ -257,7 +267,6 @@ void CreateDefaultINI() {
     fprintf(iniFile, "; Temperature values are in Celsius. Use 127 to disable a threshold.\n");
     fprintf(iniFile, "; Set Fan1_RPM and Fan2_RPM to 0 for fans OFF at that level.\n\n");
 
-    // Write default silent curve values in C++ array format
     const int d[11][10] = {
         {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},
         {0, 0, 5, 5, 67, 63, 53, 50, 45, 35},
@@ -279,39 +288,32 @@ void CreateDefaultINI() {
     }
 
     fclose(iniFile);
-    printf("Created default %s\n", INI_FILENAME);
+    ConsolePrint("Created default %s\n", INI_FILENAME);
 }
 
 // --- Core Functions ---
-
-// Writes a full fan curve to the EC
 void WriteFanCurve(const std::vector<FanCurvePoint>& curve) {
-    printf("Writing %zu fan curve points to EC memory...\n", curve.size());
+    ConsolePrint("Writing %zu fan curve points to EC memory...\n", curve.size());
     for (size_t i = 0; i < curve.size(); ++i) {
         unsigned short current_addr = FAN_CURVE_BASE_ADDR + (unsigned short)(i * 0x10);
         uint8_t* data = (uint8_t*)&curve[i];
-
-        // Write the 16 bytes for this curve point
         for (int j = 0; j < sizeof(FanCurvePoint); ++j) {
             ECRamWriteExt(current_addr + j, data[j]);
         }
     }
 
-    // Tell the EC to apply the changes instantly
-    printf("Setting instant-apply counters...\n");
-    ECRamWriteExt(0xC5FE, 0x64); // 100 in decimal
-    ECRamWriteExt(0xC5FF, 0x64); // 100 in decimal
-
-    printf("Write complete.\n");
+    ConsolePrint("Setting instant-apply counters...\n");
+    ECRamWriteExt(0xC5FE, 0x64);
+    ECRamWriteExt(0xC5FF, 0x64);
+    ConsolePrint("Write complete.\n");
 }
 
-// Reads the current fan curve from the EC and displays it
 void ReadAndDisplayCurrentCurve() {
-    printf("\n--- Reading Current Fan Curve from EC ---\n");
-    printf("LVL | RPM1/2 | Acc/Dec | CPU(Max/Min) | GPU(Max/Min) | HST(Max/Min)\n");
-    printf("----------------------------------------------------------------------\n");
+    ConsolePrint("\n--- Reading Current Fan Curve from EC ---\n");
+    ConsolePrint("LVL | RPM1/2 | Acc/Dec | CPU(Max/Min) | GPU(Max/Min) | HST(Max/Min)\n");
+    ConsolePrint("----------------------------------------------------------------------\n");
 
-    for (int i = 0; i < defaultCurve.size(); ++i) {
+    for (size_t i = 0; i < defaultCurve.size(); ++i) {
         unsigned short base_addr = FAN_CURVE_BASE_ADDR + (unsigned short)(i * 0x10);
 
         uint8_t fan1 = ECRamReadExt(base_addr + 0);
@@ -325,40 +327,36 @@ void ReadAndDisplayCurrentCurve() {
         uint8_t hmax = ECRamReadExt(base_addr + 8);
         uint8_t hmin = ECRamReadExt(base_addr + 9);
 
-        printf("%-3d | %-4d/%-4d| %-3d/%-3d | %-4dC/%-4dC  | %-4dC/%-4dC  | %-4dC/%-4dC\n",
+        ConsolePrint("%-3zu | %-4d/%-4d| %-3d/%-3d | %-4dC/%-4dC  | %-4dC/%-4dC  | %-4dC/%-4dC\n",
             i, fan1 * 100, fan2 * 100, accl, decl, cmax, cmin, gmax, gmin, hmax, hmin);
     }
-    printf("----------------------------------------------------------------------\n");
+    ConsolePrint("----------------------------------------------------------------------\n");
 }
 
-// Dumps the full EC memory to ec_dump.txt
 void DumpECMemory() {
-    printf("\n--- EC Memory Dumper ---\n");
+    ConsolePrint("\n--- EC Memory Dumper ---\n");
 
-    // Open the output file
     FILE* dumpFile;
     if (fopen_s(&dumpFile, "ec_dump.txt", "w") != 0) {
-        printf("ERROR: Could not create ec_dump.txt.\n");
+        ConsolePrint("ERROR: Could not create ec_dump.txt.\n");
         return;
     }
-    printf("Output file 'ec_dump.txt' created.\n");
+    ConsolePrint("Output file 'ec_dump.txt' created.\n");
 
-    // --- Step 1: Identify the Embedded Controller ---
-    printf("Reading EC identification...\n");
+    ConsolePrint("Reading EC identification...\n");
     fprintf(dumpFile, "--- Embedded Controller Information ---\n");
 
     uint8_t ec_id1 = ECRamReadExt(0x2000);
     uint8_t ec_id2 = ECRamReadExt(0x2001);
     uint8_t ec_ver = ECRamReadExt(0x2002);
 
-    printf("EC Chip ID: ITE-%02X%02X\n", ec_id1, ec_id2);
-    printf("EC Firmware Version: %u\n", ec_ver);
+    ConsolePrint("EC Chip ID: ITE-%02X%02X\n", ec_id1, ec_id2);
+    ConsolePrint("EC Firmware Version: %u\n", ec_ver);
     fprintf(dumpFile, "EC Chip ID: ITE-%02X%02X\n", ec_id1, ec_id2);
     fprintf(dumpFile, "EC Firmware Version: %u\n", ec_ver);
     fprintf(dumpFile, "--------------------------------------\n\n");
 
-    // --- Step 2: Dump the Standard 256-byte EC RAM (PM Channel) ---
-    printf("Dumping standard 256-byte EC RAM (0x00-0xFF)...\n");
+    ConsolePrint("Dumping standard 256-byte EC RAM (0x00-0xFF)...\n");
     fprintf(dumpFile, "--- Standard EC RAM Dump (256 Bytes, via PM Channel) ---\n");
     fprintf(dumpFile, "Offset | 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F\n");
     fprintf(dumpFile, "-------|-------------------------------------------------\n");
@@ -374,8 +372,7 @@ void DumpECMemory() {
     }
     fprintf(dumpFile, "\n\n");
 
-    // --- Step 3: Dump the Full 64KB Extended EC RAM (Direct I/O) ---
-    printf("Dumping full 64KB extended EC RAM (0x0000-0xFFFF). This will take a moment...\n");
+    ConsolePrint("Dumping full 64KB extended EC RAM (0x0000-0xFFFF). This will take a moment...\n");
     fprintf(dumpFile, "--- Full Extended EC RAM Dump (64KB, via Direct I/O) ---\n");
     fprintf(dumpFile, "Address  | 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F\n");
     fprintf(dumpFile, "---------|-------------------------------------------------\n");
@@ -387,307 +384,300 @@ void DumpECMemory() {
         fprintf(dumpFile, "%02X ", ECRamReadExt((unsigned short)i));
         if (i % 16 == 15) {
             fprintf(dumpFile, "\n");
-            // Print progress to console
-            if (i % 256 == 255) {
-                printf("\rProgress: %d%%", (i * 100) / 0xFFFF);
+            if (i % 4096 == 4095) {
+                ConsolePrint("Progress: %d%%\n", (i * 100) / 0xFFFF);
             }
         }
     }
-    printf("\rProgress: 100%%\n");
+    ConsolePrint("Progress: 100%%\n");
 
-    // --- Cleanup ---
     fclose(dumpFile);
-    printf("\nDump complete. All data saved to ec_dump.txt.\n");
+    ConsolePrint("\nDump complete. All data saved to ec_dump.txt.\n");
 }
-
 
 // --- System Tray Functions ---
-
-// Forward declaration
-void ShowConsoleWindow();
-void HideConsoleToTray();
-
-// Window procedure for the hidden tray message window
-LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_TRAYICON:
-        switch (lParam) {
-        case WM_LBUTTONUP:
-        case WM_LBUTTONDBLCLK:
-            // Left click or double-click: restore the console window
-            ShowConsoleWindow();
-            break;
-        case WM_RBUTTONUP:
-            // Right click: show context menu
-            {
-                POINT pt;
-                GetCursorPos(&pt);
-
-                HMENU hMenu = CreatePopupMenu();
-                AppendMenu(hMenu, MF_STRING, ID_TRAY_SHOW, L"Show Window");
-                AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-                AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
-
-                // Required for the menu to work properly
-                SetForegroundWindow(hWnd);
-
-                TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN,
-                    pt.x, pt.y, 0, hWnd, NULL);
-
-                DestroyMenu(hMenu);
-            }
-            break;
-        }
-        break;
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case ID_TRAY_SHOW:
-            ShowConsoleWindow();
-            break;
-        case ID_TRAY_EXIT:
-            g_bRunning = false;
-            ShowConsoleWindow();  // Restore console before exit
-            PostQuitMessage(0);
-            break;
-        }
-        break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        break;
-    default:
-        return DefWindowProc(hWnd, msg, wParam, lParam);
-    }
-    return 0;
-}
-
-// Create the hidden window to receive tray messages
-bool CreateTrayWindow() {
-    WNDCLASSEX wc = {0};
-    wc.cbSize = sizeof(WNDCLASSEX);
-    wc.lpfnWndProc = TrayWndProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = L"LegionFanControlTrayClass";
-
-    if (!RegisterClassEx(&wc)) {
-        return false;
-    }
-
-    g_hTrayWnd = CreateWindowEx(0, L"LegionFanControlTrayClass", L"LegionFanControlTray",
-        0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandle(NULL), NULL);
-
-    return g_hTrayWnd != NULL;
-}
-
-// Add the tray icon
-bool AddTrayIcon() {
+void AddTrayIcon() {
     g_nid.cbSize = sizeof(NOTIFYICONDATA);
-    g_nid.hWnd = g_hTrayWnd;
+    g_nid.hWnd = g_hMainWnd;
     g_nid.uID = ID_TRAY_ICON;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);  // Default icon
+    g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     wcscpy_s(g_nid.szTip, L"Legion Fan Control");
-
-    return Shell_NotifyIcon(NIM_ADD, &g_nid) != FALSE;
+    Shell_NotifyIcon(NIM_ADD, &g_nid);
 }
 
-// Remove the tray icon
 void RemoveTrayIcon() {
     Shell_NotifyIcon(NIM_DELETE, &g_nid);
 }
 
-// Hide console window to system tray
-void HideConsoleToTray() {
-    if (!g_bMinimizedToTray) {
-        // Add WS_EX_TOOLWINDOW to hide from Alt+Tab
-        LONG_PTR exStyle = GetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE);
-        SetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
-        ShowWindow(g_hConsoleWnd, SW_HIDE);
-        g_bMinimizedToTray = true;
-    }
+void MinimizeToTray() {
+    ShowWindow(g_hMainWnd, SW_HIDE);
+    g_bMinimizedToTray = true;
 }
 
-// Show/restore the console window
-void ShowConsoleWindow() {
-    if (g_bMinimizedToTray) {
-        // Remove WS_EX_TOOLWINDOW to show in Alt+Tab again
-        LONG_PTR exStyle = GetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE);
-        SetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE, exStyle & ~WS_EX_TOOLWINDOW);
-        ShowWindow(g_hConsoleWnd, SW_SHOW);
-        SetForegroundWindow(g_hConsoleWnd);
-        g_bMinimizedToTray = false;
-    }
+void RestoreFromTray() {
+    ShowWindow(g_hMainWnd, SW_SHOW);
+    SetForegroundWindow(g_hMainWnd);
+    g_bMinimizedToTray = false;
 }
 
-// Console control handler - intercept close button
-BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
-    switch (dwCtrlType) {
-    case CTRL_CLOSE_EVENT:
-        // Instead of closing, minimize to tray
-        HideConsoleToTray();
-        return TRUE;  // Handled - don't close
-    case CTRL_C_EVENT:
-    case CTRL_BREAK_EVENT:
-        // Allow Ctrl+C and Ctrl+Break to exit normally
-        return FALSE;
+// --- Menu Display ---
+void ShowMenu() {
+    ConsoleClear();
+    ConsolePrint("======================================\n");
+    ConsolePrint("  Legion EC Fan Curve Writer (ITE-5507)\n");
+    ConsolePrint("======================================\n\n");
+    ConsolePrint("WARNING: This is a low-level tool. Use responsibly.\n\n");
+    ConsolePrint("Select an option:\n");
+    ConsolePrint("  [1] Apply CUSTOM Fan Curve (from fancurve.ini)\n");
+    ConsolePrint("  [2] Apply CONSTANT 1700 RPM Fan Curve\n");
+    ConsolePrint("  [3] Apply CUSTOM CONSTANT RPM (enter your own value)\n");
+    ConsolePrint("  [4] Restore DEFAULT Fan Curve\n");
+    ConsolePrint("  [5] READ and Display Current Fan Curve from EC\n");
+    ConsolePrint("  [6] DUMP Full EC Memory to ec_dump.txt\n");
+    ConsolePrint("  [7] Minimize to Tray\n");
+    ConsolePrint("  [8] Exit\n\n");
+    ConsolePrint("Your choice: ");
+}
+
+void HandleMenuChoice(char choice) {
+    ConsolePrint("%c\n\n", choice);
+
+    switch (choice) {
+    case '1':
+        if (LoadCustomCurveFromINI()) {
+            ConsolePrint("Loaded %zu levels from %s\n", customCurve.size(), INI_FILENAME);
+            ConsolePrint("Applying CUSTOM fan curve...\n");
+            WriteFanCurve(customCurve);
+            ConsolePrint("\nCUSTOM curve applied successfully!\n");
+        } else {
+            ConsolePrint("Could not find %s - creating default...\n", INI_FILENAME);
+            CreateDefaultINI();
+            ConsolePrint("Please edit %s and try again.\n", INI_FILENAME);
+        }
+        break;
+    case '2':
+        ConsolePrint("Applying CONSTANT 1700 RPM fan curve...\n");
+        WriteFanCurve(constant1700Curve);
+        ConsolePrint("\nCONSTANT 1700 RPM curve applied successfully!\n");
+        break;
+    case '3':
+        {
+            // For simplicity, use a dialog box for RPM input
+            int rpmValue = 1700;  // Default
+            // Show input dialog or use default
+            ConsolePrint("Using default 1700 RPM (edit code for custom value)...\n");
+            uint8_t ecValue = (uint8_t)(rpmValue / 100);
+
+            std::vector<FanCurvePoint> customConstantCurve = {
+                {ecValue, ecValue, 5, 5, 67, 0, 53, 0, 40, 0},
+                {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 45, 35},
+                {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 50, 40},
+                {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 127, 45},
+                {ecValue, ecValue, 2, 2, 72, 63, 56, 50, 127, 127},
+                {ecValue, ecValue, 2, 2, 77, 67, 59, 53, 127, 127},
+                {ecValue, ecValue, 2, 2, 80, 72, 65, 56, 127, 127},
+                {ecValue, ecValue, 2, 2, 84, 77, 68, 62, 127, 127},
+                {ecValue, ecValue, 2, 2, 88, 80, 75, 65, 127, 127},
+                {ecValue, ecValue, 2, 2, 91, 84, 85, 69, 127, 127},
+                {ecValue, ecValue, 2, 2, 127, 88, 127, 81, 127, 127}
+            };
+
+            ConsolePrint("Applying CONSTANT %d RPM (EC value: %d) fan curve...\n", ecValue * 100, ecValue);
+            WriteFanCurve(customConstantCurve);
+            ConsolePrint("\nCONSTANT %d RPM curve applied successfully!\n", ecValue * 100);
+        }
+        break;
+    case '4':
+        ConsolePrint("Applying DEFAULT fan curve...\n");
+        WriteFanCurve(defaultCurve);
+        ConsolePrint("\nDEFAULT curve restored successfully!\n");
+        break;
+    case '5':
+        ReadAndDisplayCurrentCurve();
+        break;
+    case '6':
+        DumpECMemory();
+        break;
+    case '7':
+        ConsolePrint("Minimizing to system tray...\n");
+        ConsolePrint("Click the tray icon to restore, or right-click for menu.\n");
+        MinimizeToTray();
+        return;  // Don't show "press any key" message
+    case '8':
+        ConsolePrint("Exiting...\n");
+        g_bRunning = false;
+        PostQuitMessage(0);
+        return;
     default:
-        return FALSE;
+        ConsolePrint("Invalid option. Please try again.\n");
+        break;
     }
+
+    ConsolePrint("\nPress any key to return to the menu...");
 }
 
-// Process tray messages (call this periodically)
-void ProcessTrayMessages() {
-    MSG msg;
-    while (PeekMessage(&msg, g_hTrayWnd, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+// --- Window Procedure ---
+bool g_bWaitingForKey = false;
+
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+        {
+            // Create monospace edit control for console output
+            g_hEditOutput = CreateWindowExA(
+                WS_EX_CLIENTEDGE, "EDIT", "",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+                0, 0, 100, 100,  // Will be resized in WM_SIZE
+                hWnd, (HMENU)ID_EDIT_OUTPUT, GetModuleHandle(NULL), NULL);
+
+            // Set monospace font
+            g_hFont = CreateFontA(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+            SendMessage(g_hEditOutput, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+
+            // Set dark background
+            // Note: Edit control colors are set in WM_CTLCOLOREDIT
+        }
+        return 0;
+
+    case WM_SIZE:
+        {
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+            MoveWindow(g_hEditOutput, 0, 0, rc.right, rc.bottom, TRUE);
+        }
+        return 0;
+
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORSTATIC:
+        {
+            HDC hdc = (HDC)wParam;
+            SetTextColor(hdc, RGB(200, 200, 200));  // Light gray text
+            SetBkColor(hdc, RGB(12, 12, 12));       // Dark background
+            static HBRUSH hBrush = CreateSolidBrush(RGB(12, 12, 12));
+            return (LRESULT)hBrush;
+        }
+
+    case WM_CHAR:
+        if (g_bWaitingForKey) {
+            g_bWaitingForKey = false;
+            ShowMenu();
+        } else {
+            HandleMenuChoice((char)wParam);
+            if (wParam != '7' && wParam != '8' && g_bRunning) {
+                g_bWaitingForKey = true;
+            }
+        }
+        return 0;
+
+    case WM_TRAYICON:
+        switch (lParam) {
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+            RestoreFromTray();
+            break;
+        case WM_RBUTTONUP:
+            {
+                POINT pt;
+                GetCursorPos(&pt);
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenu(hMenu, MF_STRING, ID_TRAY_SHOW, L"Show Window");
+                AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+                SetForegroundWindow(hWnd);
+                TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, NULL);
+                DestroyMenu(hMenu);
+            }
+            break;
+        }
+        return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case ID_TRAY_SHOW:
+            RestoreFromTray();
+            break;
+        case ID_TRAY_EXIT:
+            g_bRunning = false;
+            PostQuitMessage(0);
+            break;
+        }
+        return 0;
+
+    case WM_CLOSE:
+        // Minimize to tray instead of closing
+        MinimizeToTray();
+        return 0;
+
+    case WM_DESTROY:
+        RemoveTrayIcon();
+        if (g_hFont) DeleteObject(g_hFont);
+        PostQuitMessage(0);
+        return 0;
     }
+    return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-// --- Main Program Loop ---
-int main() {
+// --- Entry Point ---
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Initialize WinIO Driver
     if (!InitializeWinIo()) {
-        printf("FATAL: Failed to initialize WinIO driver.\n");
-        printf("Please ensure WinIox64.dll/.sys are present and RUN AS ADMINISTRATOR.\n");
-        _getch();
+        MessageBoxA(NULL,
+            "Failed to initialize WinIO driver.\n"
+            "Please ensure WinIox64.dll/.sys are present and RUN AS ADMINISTRATOR.",
+            "Legion Fan Control - Error", MB_ICONERROR);
         return 1;
     }
 
-    // Get console window handle
-    g_hConsoleWnd = GetConsoleWindow();
+    // Register window class
+    WNDCLASSEX wc = {0};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"LegionFanControlClass";
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
 
-    // Initialize system tray
-    if (!CreateTrayWindow()) {
-        printf("WARNING: Could not create tray window.\n");
+    if (!RegisterClassEx(&wc)) {
+        ShutdownWinIo();
+        return 1;
     }
-    if (!AddTrayIcon()) {
-        printf("WARNING: Could not add tray icon.\n");
+
+    // Create main window
+    g_hMainWnd = CreateWindowEx(
+        0, L"LegionFanControlClass", L"Legion Fan Control",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+        NULL, NULL, hInstance, NULL);
+
+    if (!g_hMainWnd) {
+        ShutdownWinIo();
+        return 1;
     }
 
-    // Set console control handler to intercept close button
-    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+    // Add tray icon
+    AddTrayIcon();
 
-    // Main menu loop
-    while (g_bRunning) {
-        system("cls"); // Clear the screen
-        printf("======================================\n");
-        printf("  Legion EC Fan Curve Writer (ITE-5507)\n");
-        printf("======================================\n\n");
-        printf("WARNING: This is a low-level tool. Use responsibly.\n\n");
-        printf("Select an option:\n");
-        printf("  [1] Apply CUSTOM Fan Curve (from fancurve.ini)\n");
-        printf("  [2] Apply CONSTANT 1700 RPM Fan Curve\n");
-        printf("  [3] Apply CUSTOM CONSTANT RPM (enter your own value)\n");
-        printf("  [4] Restore DEFAULT Fan Curve\n");
-        printf("  [5] READ and Display Current Fan Curve from EC\n");
-        printf("  [6] DUMP Full EC Memory to ec_dump.txt\n");
-        printf("  [7] Minimize to Tray\n");
-        printf("  [8] Exit\n\n");
-        printf("Your choice: ");
+    // Show window
+    ShowWindow(g_hMainWnd, nCmdShow);
+    UpdateWindow(g_hMainWnd);
 
-        char choice = _getch();
-        printf("%c\n\n", choice);
+    // Show initial menu
+    ShowMenu();
 
-        switch (choice) {
-        case '1':
-            if (LoadCustomCurveFromINI()) {
-                printf("Loaded %zu levels from %s\n", customCurve.size(), INI_FILENAME);
-                printf("Applying CUSTOM fan curve...\n");
-                WriteFanCurve(customCurve);
-                printf("\nCUSTOM curve applied successfully!\n");
-            } else {
-                printf("Could not find %s - creating default...\n", INI_FILENAME);
-                CreateDefaultINI();
-                printf("Please edit %s and try again.\n", INI_FILENAME);
-            }
-            break;
-        case '2':
-            printf("Applying CONSTANT 1700 RPM fan curve...\n");
-            WriteFanCurve(constant1700Curve);
-            printf("\nCONSTANT 1700 RPM curve applied successfully!\n");
-            break;
-        case '3':
-            {
-                int rpmValue;
-                printf("Enter desired RPM (e.g., 1500, 1700, 2000): ");
-                scanf_s("%d", &rpmValue);
-
-                // Convert to EC units (divide by 100)
-                uint8_t ecValue = (uint8_t)(rpmValue / 100);
-
-                if (ecValue < 1 || ecValue > 60) {
-                    printf("WARNING: Value %d (EC unit: %d) is outside typical range (100-6000 RPM).\n",
-                           rpmValue, ecValue);
-                    printf("Proceed anyway? (y/n): ");
-                    char confirm = _getch();
-                    printf("%c\n", confirm);
-                    if (confirm != 'y' && confirm != 'Y') {
-                        printf("Cancelled.\n");
-                        break;
-                    }
-                }
-
-                // Build a constant curve with the user's value
-                std::vector<FanCurvePoint> customConstantCurve = {
-                    {ecValue, ecValue, 5, 5, 67, 0, 53, 0, 40, 0},
-                    {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 45, 35},
-                    {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 50, 40},
-                    {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 127, 45},
-                    {ecValue, ecValue, 2, 2, 72, 63, 56, 50, 127, 127},
-                    {ecValue, ecValue, 2, 2, 77, 67, 59, 53, 127, 127},
-                    {ecValue, ecValue, 2, 2, 80, 72, 65, 56, 127, 127},
-                    {ecValue, ecValue, 2, 2, 84, 77, 68, 62, 127, 127},
-                    {ecValue, ecValue, 2, 2, 88, 80, 75, 65, 127, 127},
-                    {ecValue, ecValue, 2, 2, 91, 84, 85, 69, 127, 127},
-                    {ecValue, ecValue, 2, 2, 127, 88, 127, 81, 127, 127}
-                };
-
-                printf("Applying CONSTANT %d RPM (EC value: %d) fan curve...\n", ecValue * 100, ecValue);
-                WriteFanCurve(customConstantCurve);
-                printf("\nCONSTANT %d RPM curve applied successfully!\n", ecValue * 100);
-            }
-            break;
-        case '4':
-            printf("Applying DEFAULT fan curve...\n");
-            WriteFanCurve(defaultCurve);
-            printf("\nDEFAULT curve restored successfully!\n");
-            break;
-        case '5':
-            ReadAndDisplayCurrentCurve();
-            break;
-        case '6':
-            DumpECMemory();
-            break;
-        case '7':
-            printf("Minimizing to system tray...\n");
-            printf("Click the tray icon to restore, or right-click for menu.\n");
-            Sleep(1000);  // Brief pause so user can read the message
-            HideConsoleToTray();
-            // Wait while minimized, processing tray messages
-            while (g_bMinimizedToTray && g_bRunning) {
-                ProcessTrayMessages();
-                Sleep(100);  // Don't spin the CPU
-            }
-            break;
-        case '8':
-            printf("Exiting...\n");
-            g_bRunning = false;
-            break;
-        default:
-            printf("Invalid option. Please try again.\n");
-            break;
-        }
-
-        if (!g_bRunning) break;
-
-        printf("\nPress any key to return to the menu...");
-        _getch();
+    // Message loop
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
     }
 
     // Cleanup
-    RemoveTrayIcon();
-    if (g_hTrayWnd) DestroyWindow(g_hTrayWnd);
     ShutdownWinIo();
-    return 0;
+    return (int)msg.wParam;
 }
