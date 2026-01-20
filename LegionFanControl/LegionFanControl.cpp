@@ -405,10 +405,11 @@ int main() {
         printf("Select an option:\n");
         printf("  [1] Apply CUSTOM Fan Curve (from fancurve.ini)\n");
         printf("  [2] Apply CONSTANT 1700 RPM Fan Curve\n");
-        printf("  [3] Restore DEFAULT Fan Curve\n");
-        printf("  [4] READ and Display Current Fan Curve from EC\n");
-        printf("  [5] DUMP Full EC Memory to ec_dump.txt\n");
-        printf("  [6] Exit\n\n");
+        printf("  [3] Apply CUSTOM CONSTANT RPM (enter your own value)\n");
+        printf("  [4] Restore DEFAULT Fan Curve\n");
+        printf("  [5] READ and Display Current Fan Curve from EC\n");
+        printf("  [6] DUMP Full EC Memory to ec_dump.txt\n");
+        printf("  [7] Exit\n\n");
         printf("Your choice: ");
 
         char choice = _getch();
@@ -433,17 +434,58 @@ int main() {
             printf("\nCONSTANT 1700 RPM curve applied successfully!\n");
             break;
         case '3':
+            {
+                int rpmValue;
+                printf("Enter desired RPM (e.g., 1500, 1700, 2000): ");
+                scanf_s("%d", &rpmValue);
+
+                // Convert to EC units (divide by 100)
+                uint8_t ecValue = (uint8_t)(rpmValue / 100);
+
+                if (ecValue < 1 || ecValue > 60) {
+                    printf("WARNING: Value %d (EC unit: %d) is outside typical range (100-6000 RPM).\n",
+                           rpmValue, ecValue);
+                    printf("Proceed anyway? (y/n): ");
+                    char confirm = _getch();
+                    printf("%c\n", confirm);
+                    if (confirm != 'y' && confirm != 'Y') {
+                        printf("Cancelled.\n");
+                        break;
+                    }
+                }
+
+                // Build a constant curve with the user's value
+                std::vector<FanCurvePoint> customConstantCurve = {
+                    {ecValue, ecValue, 5, 5, 67, 0, 53, 0, 40, 0},
+                    {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 45, 35},
+                    {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 50, 40},
+                    {ecValue, ecValue, 5, 5, 67, 63, 53, 50, 127, 45},
+                    {ecValue, ecValue, 2, 2, 72, 63, 56, 50, 127, 127},
+                    {ecValue, ecValue, 2, 2, 77, 67, 59, 53, 127, 127},
+                    {ecValue, ecValue, 2, 2, 80, 72, 65, 56, 127, 127},
+                    {ecValue, ecValue, 2, 2, 84, 77, 68, 62, 127, 127},
+                    {ecValue, ecValue, 2, 2, 88, 80, 75, 65, 127, 127},
+                    {ecValue, ecValue, 2, 2, 91, 84, 85, 69, 127, 127},
+                    {ecValue, ecValue, 2, 2, 127, 88, 127, 81, 127, 127}
+                };
+
+                printf("Applying CONSTANT %d RPM (EC value: %d) fan curve...\n", ecValue * 100, ecValue);
+                WriteFanCurve(customConstantCurve);
+                printf("\nCONSTANT %d RPM curve applied successfully!\n", ecValue * 100);
+            }
+            break;
+        case '4':
             printf("Applying DEFAULT fan curve...\n");
             WriteFanCurve(defaultCurve);
             printf("\nDEFAULT curve restored successfully!\n");
             break;
-        case '4':
+        case '5':
             ReadAndDisplayCurrentCurve();
             break;
-        case '5':
+        case '6':
             DumpECMemory();
             break;
-        case '6':
+        case '7':
             printf("Exiting...\n");
             ShutdownWinIo();
             return 0;
