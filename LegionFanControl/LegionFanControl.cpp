@@ -19,11 +19,27 @@
  */
 
 #include <Windows.h>
+#include <shellapi.h>  // For system tray
 #include <stdio.h>
 #include <stdint.h>
 #include <vector>
 #include <string>
 #include <conio.h> // For _getch()
+
+#pragma comment(lib, "shell32.lib")
+
+// System tray constants
+#define WM_TRAYICON (WM_USER + 1)
+#define ID_TRAY_ICON 1
+#define ID_TRAY_SHOW 1001
+#define ID_TRAY_EXIT 1002
+
+// Global variables for system tray
+NOTIFYICONDATA g_nid = {0};
+HWND g_hTrayWnd = NULL;
+HWND g_hConsoleWnd = NULL;
+bool g_bMinimizedToTray = false;
+bool g_bRunning = true;
 
 #include "winio.h"
 #pragma comment(lib, "WinIox64.lib")
@@ -385,6 +401,149 @@ void DumpECMemory() {
 }
 
 
+// --- System Tray Functions ---
+
+// Forward declaration
+void ShowConsoleWindow();
+void HideConsoleToTray();
+
+// Window procedure for the hidden tray message window
+LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_TRAYICON:
+        switch (lParam) {
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+            // Left click or double-click: restore the console window
+            ShowConsoleWindow();
+            break;
+        case WM_RBUTTONUP:
+            // Right click: show context menu
+            {
+                POINT pt;
+                GetCursorPos(&pt);
+
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenu(hMenu, MF_STRING, ID_TRAY_SHOW, L"Show Window");
+                AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+
+                // Required for the menu to work properly
+                SetForegroundWindow(hWnd);
+
+                TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+                    pt.x, pt.y, 0, hWnd, NULL);
+
+                DestroyMenu(hMenu);
+            }
+            break;
+        }
+        break;
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case ID_TRAY_SHOW:
+            ShowConsoleWindow();
+            break;
+        case ID_TRAY_EXIT:
+            g_bRunning = false;
+            ShowConsoleWindow();  // Restore console before exit
+            PostQuitMessage(0);
+            break;
+        }
+        break;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        break;
+    default:
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+// Create the hidden window to receive tray messages
+bool CreateTrayWindow() {
+    WNDCLASSEX wc = {0};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.lpfnWndProc = TrayWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = L"LegionFanControlTrayClass";
+
+    if (!RegisterClassEx(&wc)) {
+        return false;
+    }
+
+    g_hTrayWnd = CreateWindowEx(0, L"LegionFanControlTrayClass", L"LegionFanControlTray",
+        0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandle(NULL), NULL);
+
+    return g_hTrayWnd != NULL;
+}
+
+// Add the tray icon
+bool AddTrayIcon() {
+    g_nid.cbSize = sizeof(NOTIFYICONDATA);
+    g_nid.hWnd = g_hTrayWnd;
+    g_nid.uID = ID_TRAY_ICON;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_TRAYICON;
+    g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);  // Default icon
+    wcscpy_s(g_nid.szTip, L"Legion Fan Control");
+
+    return Shell_NotifyIcon(NIM_ADD, &g_nid) != FALSE;
+}
+
+// Remove the tray icon
+void RemoveTrayIcon() {
+    Shell_NotifyIcon(NIM_DELETE, &g_nid);
+}
+
+// Hide console window to system tray
+void HideConsoleToTray() {
+    if (!g_bMinimizedToTray) {
+        // Add WS_EX_TOOLWINDOW to hide from Alt+Tab
+        LONG_PTR exStyle = GetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE);
+        SetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+        ShowWindow(g_hConsoleWnd, SW_HIDE);
+        g_bMinimizedToTray = true;
+    }
+}
+
+// Show/restore the console window
+void ShowConsoleWindow() {
+    if (g_bMinimizedToTray) {
+        // Remove WS_EX_TOOLWINDOW to show in Alt+Tab again
+        LONG_PTR exStyle = GetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE);
+        SetWindowLongPtr(g_hConsoleWnd, GWL_EXSTYLE, exStyle & ~WS_EX_TOOLWINDOW);
+        ShowWindow(g_hConsoleWnd, SW_SHOW);
+        SetForegroundWindow(g_hConsoleWnd);
+        g_bMinimizedToTray = false;
+    }
+}
+
+// Console control handler - intercept close button
+BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
+    switch (dwCtrlType) {
+    case CTRL_CLOSE_EVENT:
+        // Instead of closing, minimize to tray
+        HideConsoleToTray();
+        return TRUE;  // Handled - don't close
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+        // Allow Ctrl+C and Ctrl+Break to exit normally
+        return FALSE;
+    default:
+        return FALSE;
+    }
+}
+
+// Process tray messages (call this periodically)
+void ProcessTrayMessages() {
+    MSG msg;
+    while (PeekMessage(&msg, g_hTrayWnd, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+}
+
 // --- Main Program Loop ---
 int main() {
     // Initialize WinIO Driver
@@ -395,8 +554,22 @@ int main() {
         return 1;
     }
 
+    // Get console window handle
+    g_hConsoleWnd = GetConsoleWindow();
+
+    // Initialize system tray
+    if (!CreateTrayWindow()) {
+        printf("WARNING: Could not create tray window.\n");
+    }
+    if (!AddTrayIcon()) {
+        printf("WARNING: Could not add tray icon.\n");
+    }
+
+    // Set console control handler to intercept close button
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+
     // Main menu loop
-    while (true) {
+    while (g_bRunning) {
         system("cls"); // Clear the screen
         printf("======================================\n");
         printf("  Legion EC Fan Curve Writer (ITE-5507)\n");
@@ -409,7 +582,8 @@ int main() {
         printf("  [4] Restore DEFAULT Fan Curve\n");
         printf("  [5] READ and Display Current Fan Curve from EC\n");
         printf("  [6] DUMP Full EC Memory to ec_dump.txt\n");
-        printf("  [7] Exit\n\n");
+        printf("  [7] Minimize to Tray\n");
+        printf("  [8] Exit\n\n");
         printf("Your choice: ");
 
         char choice = _getch();
@@ -486,19 +660,34 @@ int main() {
             DumpECMemory();
             break;
         case '7':
+            printf("Minimizing to system tray...\n");
+            printf("Click the tray icon to restore, or right-click for menu.\n");
+            Sleep(1000);  // Brief pause so user can read the message
+            HideConsoleToTray();
+            // Wait while minimized, processing tray messages
+            while (g_bMinimizedToTray && g_bRunning) {
+                ProcessTrayMessages();
+                Sleep(100);  // Don't spin the CPU
+            }
+            break;
+        case '8':
             printf("Exiting...\n");
-            ShutdownWinIo();
-            return 0;
+            g_bRunning = false;
+            break;
         default:
             printf("Invalid option. Please try again.\n");
             break;
         }
+
+        if (!g_bRunning) break;
 
         printf("\nPress any key to return to the menu...");
         _getch();
     }
 
     // Cleanup
+    RemoveTrayIcon();
+    if (g_hTrayWnd) DestroyWindow(g_hTrayWnd);
     ShutdownWinIo();
     return 0;
 }
