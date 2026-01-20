@@ -46,6 +46,17 @@ NOTIFYICONDATA g_nid = {0};
 bool g_bMinimizedToTray = false;
 bool g_bRunning = true;
 HFONT g_hFont = NULL;
+WNDPROC g_OrigEditProc = NULL;
+
+// Subclass proc for edit control to forward key input to main window
+LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_CHAR || msg == WM_KEYDOWN) {
+        // Forward to main window
+        SendMessage(g_hMainWnd, msg, wParam, lParam);
+        return 0;
+    }
+    return CallWindowProc(g_OrigEditProc, hWnd, msg, wParam, lParam);
+}
 
 //==========================The hardware port to read/write function================================
 #define READ_PORT(port, data2) GetPortVal(port, &data2, 1);
@@ -531,6 +542,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
                 0, 0, 100, 100,  // Will be resized in WM_SIZE
                 hWnd, (HMENU)ID_EDIT_OUTPUT, GetModuleHandle(NULL), NULL);
+
+            // Subclass the edit control to forward keyboard input
+            g_OrigEditProc = (WNDPROC)SetWindowLongPtr(g_hEditOutput, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
 
             // Set monospace font
             g_hFont = CreateFontA(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
