@@ -1,4 +1,4 @@
-# ![Logo](LegionFanControl/logo.ico) LegionFanControl NEW
+# ![Logo](logo.png) LegionFanControl NEW
 
 This is a dirty viby steamy FORK of https://github.com/0x1F9F1/LegionFanControl
 
