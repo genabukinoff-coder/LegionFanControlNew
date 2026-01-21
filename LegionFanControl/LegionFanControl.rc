@@ -1,0 +1,4 @@
+#include "resource.h"
+
+// Icon - place logo.ico in the same folder as this file
+IDI_APP_ICON ICON "logo.ico"

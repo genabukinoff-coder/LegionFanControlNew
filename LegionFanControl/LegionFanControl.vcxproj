@@ -51,7 +51,7 @@
       <ConformanceMode>true</ConformanceMode>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
     </Link>
@@ -75,6 +75,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="LegionFanControl.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="LegionFanControl.rc" />
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="WinIo64.dll">

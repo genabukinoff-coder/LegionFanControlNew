@@ -29,6 +29,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "comctl32.lib")
 
+#include "resource.h"
 #include "winio.h"
 #pragma comment(lib, "WinIox64.lib")
 
@@ -280,9 +281,9 @@ void CreateDefaultINI() {
 
     const int d[11][10] = {
         {0, 0, 5, 5, 67, 0, 53, 0, 40, 0},
-        {0, 0, 5, 5, 67, 63, 53, 50, 45, 35},
-        {0, 0, 5, 5, 67, 63, 53, 50, 50, 40},
-        {0, 0, 5, 5, 67, 63, 53, 50, 127, 45},
+        {17, 17, 5, 5, 67, 63, 53, 50, 45, 35},
+        {19, 19, 5, 5, 67, 63, 53, 50, 50, 40},
+        {21, 21, 5, 5, 67, 63, 53, 50, 127, 45},
         {23, 22, 2, 2, 72, 63, 56, 50, 127, 127},
         {25, 27, 2, 2, 77, 67, 59, 53, 127, 127},
         {29, 29, 2, 2, 80, 72, 65, 56, 127, 127},
@@ -413,7 +414,7 @@ void AddTrayIcon() {
     g_nid.uID = ID_TRAY_ICON;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    g_nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APP_ICON));
     wcscpy_s(g_nid.szTip, L"Legion Fan Control");
     Shell_NotifyIcon(NIM_ADD, &g_nid);
 }
@@ -519,7 +520,7 @@ void HandleMenuChoice(char choice) {
     case '8':
         ConsolePrint("Exiting...\n");
         g_bRunning = false;
-        PostQuitMessage(0);
+        DestroyWindow(g_hMainWnd);
         return;
     default:
         ConsolePrint("Invalid option. Please try again.\n");
@@ -616,7 +617,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         case ID_TRAY_EXIT:
             g_bRunning = false;
-            PostQuitMessage(0);
+            DestroyWindow(g_hMainWnd);
             break;
         }
         return 0;
@@ -654,8 +655,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"LegionFanControlClass";
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
+    wc.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
 
     if (!RegisterClassEx(&wc)) {
         ShutdownWinIo();
